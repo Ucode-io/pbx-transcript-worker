@@ -105,7 +105,14 @@ func transcribeCall(ctx context.Context, cfg Config, call Call, workDir string) 
 // save time, but we re-check the initial host here too (the worker fetches it
 // server-side) and cap the size.
 func download(ctx context.Context, cfg Config, rawURL, dest string) error {
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	rawURL = strings.TrimSpace(rawURL)
+	// recording_url is stored as a CDN-relative path (bucket/Media/file);
+	// stereo_recording_url is already absolute. Normalize the relative form to
+	// the CDN host so both go through the same https + host-allowlist path.
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		rawURL = "https://" + cfg.CDNHost + "/" + strings.TrimPrefix(rawURL, "/")
+	}
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("bad url: %w", err)
 	}
