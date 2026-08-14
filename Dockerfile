@@ -50,7 +50,18 @@ RUN curl --fail --location --retry 3 -o ggml-silero-v5.1.2.bin \
 RUN test "$(stat -c%s ggml-rubaistt.bin)" -gt 500000000
 
 ############################################################
-# Stage 3 — runtime
+# Stage 3 — build the Go worker (stdlib only, static)
+############################################################
+FROM golang:1.23-bookworm AS gobuild
+
+WORKDIR /w
+COPY go.mod ./
+RUN go mod download
+COPY cmd ./cmd
+RUN CGO_ENABLED=0 go build -trimpath -o /out/worker ./cmd/worker
+
+############################################################
+# Stage 4 — runtime
 ############################################################
 FROM debian:bookworm-slim AS runtime
 
@@ -62,6 +73,7 @@ WORKDIR /usr/src/app
 
 COPY --from=build  /src/build/bin/whisper-server  /usr/local/bin/whisper-server
 COPY --from=build  /src/build/bin/whisper-cli     /usr/local/bin/whisper-cli
+COPY --from=gobuild /out/worker                   /usr/local/bin/worker
 COPY --from=models /models/ggml-rubaistt.bin      /app/models/ggml-rubaistt.bin
 COPY --from=models /models/ggml-silero-v5.1.2.bin /app/models/ggml-silero-v5.1.2.bin
 

@@ -1,14 +1,14 @@
 # One-shot benchmark Job, pinned to worker08 (the only node with real headroom).
 # Runs the image in `bench` mode and exits; read the timing from its logs:
-#   kubectl -n knative-fn logs job/rubaistt-bench
+#   kubectl -n ucode-prod logs job/rubaistt-bench
 #
-# Image is built natively by GitHub CI and published to ghcr. If the ghcr package
-# is private, this namespace needs the ghcr pull secret (watch for ImagePullBackOff).
+# Runs in ucode-prod: that's where ghcr.io/ucode-io workloads live and the
+# `ghcr-registry` pull secret exists (knative-fn only has gitlab creds).
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: rubaistt-bench
-  namespace: knative-fn
+  namespace: ucode-prod
 spec:
   backoffLimit: 0            # don't retry — a failure is a result we want to read
   ttlSecondsAfterFinished: 3600
@@ -18,6 +18,8 @@ spec:
         app: rubaistt-bench
     spec:
       restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-registry
       nodeSelector:
         kubernetes.io/hostname: worker08   # fallback: worker03
       containers:
@@ -30,8 +32,8 @@ spec:
               value: "4"     # matches the eventual worker's 4-CPU limit
           resources:
             requests:
-              cpu: "4"
+              cpu: "2"          # worker08 has only ~2.6 cores free by request
               memory: "3Gi"
             limits:
-              cpu: "4"
+              cpu: "4"          # burst to 4 at runtime (node is ~89% idle) so THREADS=4 is real
               memory: "3Gi"

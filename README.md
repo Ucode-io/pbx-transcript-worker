@@ -53,6 +53,36 @@ gives real *text*.)
 
 ---
 
-## Step 2 — worker loop (after a CPU go)
-Implement `worker` mode in `entrypoint.sh`/a Go binary, then deploy as a
-Deployment via the `Ucode-io/deployments` repo (ArgoCD), pinned to worker08.
+## Step 2 — worker loop (built ✅)
+
+CPU is confirmed viable (1.29× realtime/call on worker08), so the `worker` mode
+is implemented: a stdlib-only Go binary (`cmd/worker`) that supervises a
+resident `whisper-server` and loops:
+
+1. `pbx_list_untranscribed` per app_id → batch of calls (deduped by call_uuid)
+2. download the CDN recording → ffmpeg channel-split (or resample if mono)
+3. recognize each channel via `whisper-server /inference` (sequential — the
+   benchmarked path)
+4. assemble the two-track JSON (contract §3.2)
+5. `pbx_save_transcript` → write it back
+
+It talks to the FaaS **in-cluster** at
+`http://professional-crm-pbx-integration-call.knative-fn.u-code.io` (no auth
+token; `app_id` in the body is the identity). Config is all env — see
+`cmd/worker/config.go`. `APP_IDS` (comma-separated ProfessionalCRM project keys)
+is the one required value.
+
+### Deploy + E2E test
+```sh
+# 0. prerequisite: the FaaS must expose pbx_save_transcript (deploy that repo)
+# 1. push this repo → CI rebuilds ghcr image with the worker binary
+# 2. create the project-key secret (keeps it out of git)
+kubectl -n ucode-prod create secret generic pbx-transcript-worker-config \
+  --from-literal=APP_IDS="<prof-crm-app-id>"
+# 3. roll it out (pinned to worker08)
+kubectl --kubeconfig=/Users/user/.kube/ucode.conf apply -f k8s/deployment.yaml
+kubectl --kubeconfig=/Users/user/.kube/ucode.conf -n ucode-prod logs -f deploy/pbx-transcript-worker
+```
+
+For the standard ucode rollout, add a `deployments/clusters/…/pbx-transcript-worker`
+entry (ArgoCD, microservice_v2) instead of `kubectl apply`.

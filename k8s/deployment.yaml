@@ -1,0 +1,54 @@
+# Long-running transcript worker (contract §6), pinned to worker08.
+# The APP_IDS project key comes from a Secret so it stays out of git:
+#   kubectl -n ucode-prod create secret generic pbx-transcript-worker-config \
+#     --from-literal=APP_IDS="<prof-crm-app-id>[,<another>]"
+#
+# (For the standard ArgoCD/microservice_v2 deploy this config would come from
+# Vault instead; this manifest is for a direct first rollout + E2E test.)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pbx-transcript-worker
+  namespace: ucode-prod
+  labels:
+    app: pbx-transcript-worker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate           # single resident whisper-server; no overlap on rollout
+  selector:
+    matchLabels:
+      app: pbx-transcript-worker
+  template:
+    metadata:
+      labels:
+        app: pbx-transcript-worker
+    spec:
+      imagePullSecrets:
+        - name: ghcr-registry
+      nodeSelector:
+        kubernetes.io/hostname: worker08   # fallback: worker03
+      containers:
+        - name: worker
+          image: ghcr.io/ucode-io/pbx-transcript-worker:latest
+          imagePullPolicy: Always
+          args: ["worker"]
+          env:
+            - name: THREADS
+              value: "4"
+            - name: POLL_INTERVAL_SECONDS
+              value: "30"
+            - name: BATCH_LIMIT
+              value: "5"
+            - name: APP_IDS
+              valueFrom:
+                secretKeyRef:
+                  name: pbx-transcript-worker-config
+                  key: APP_IDS
+          resources:
+            requests:
+              cpu: "2"          # worker08 has ~2.6 cores free by request
+              memory: "3Gi"
+            limits:
+              cpu: "4"          # burst to 4 for parallel-channel inference
+              memory: "3Gi"

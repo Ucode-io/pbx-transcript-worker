@@ -2,3 +2,6 @@
 models/*.bin
 *.wav
 *.webm
+
+# compiled Go binary from a local `go build`
+/worker

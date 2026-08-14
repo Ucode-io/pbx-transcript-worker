@@ -10,10 +10,9 @@ case "${mode}" in
     exec /usr/src/app/bench.sh "$@"
     ;;
   worker)
-    # The real poll→download→split→transcribe→save loop lands here after the
-    # benchmark confirms CPU is viable (contract §6).
-    echo "worker mode not implemented yet — build pending benchmark go/no-go"
-    exit 1
+    # The real poll→download→split→transcribe→save loop. The Go binary itself
+    # starts and supervises whisper-server (contract §6).
+    exec /usr/local/bin/worker "$@"
     ;;
   *)
     echo "unknown mode: ${mode} (expected 'bench' or 'worker')"
