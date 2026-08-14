@@ -1,0 +1,37 @@
+# One-shot benchmark Job, pinned to worker08 (the only node with real headroom).
+# Runs the image in `bench` mode and exits; read the timing from its logs:
+#   kubectl -n knative-fn logs job/rubaistt-bench
+#
+# Image is built natively by GitHub CI and published to ghcr. If the ghcr package
+# is private, this namespace needs the ghcr pull secret (watch for ImagePullBackOff).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rubaistt-bench
+  namespace: knative-fn
+spec:
+  backoffLimit: 0            # don't retry — a failure is a result we want to read
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: rubaistt-bench
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: worker08   # fallback: worker03
+      containers:
+        - name: bench
+          image: ghcr.io/ucode-io/pbx-transcript-worker:latest
+          imagePullPolicy: Always
+          args: ["bench"]    # override the image's default "worker" mode
+          env:
+            - name: THREADS
+              value: "4"     # matches the eventual worker's 4-CPU limit
+          resources:
+            requests:
+              cpu: "4"
+              memory: "3Gi"
+            limits:
+              cpu: "4"
+              memory: "3Gi"

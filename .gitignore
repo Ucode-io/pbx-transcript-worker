@@ -1,0 +1,4 @@
+# Model weights are large and licensed separately — never commit them.
+models/*.bin
+*.wav
+*.webm

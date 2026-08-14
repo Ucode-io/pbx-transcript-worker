@@ -1,0 +1,8 @@
+# Models are downloaded during the build (not shipped in the repo); never send
+# local copies or large binaries into the build context.
+models/
+*.bin
+*.wav
+*.webm
+.git/
+README.md
