@@ -32,6 +32,12 @@ type Config struct {
 	PollInterval time.Duration
 	BatchLimit   int
 
+	// Gemini (Google AI Studio) proofreads the raw recognition before it is
+	// stored (§7). No key — no polish step, the worker just stores whisper's
+	// output as before.
+	GeminiAPIKey string
+	GeminiModel  string
+
 	// CDNHost is the only host a recording URL may point at — the worker
 	// fetches it server-side, so this is the SSRF allowlist (matches the FaaS).
 	CDNHost          string
@@ -52,6 +58,8 @@ func loadConfig() (Config, error) {
 		ModelName:        env("MODEL_NAME", "rubaistt_v2_medium"),
 		PollInterval:     time.Duration(envInt("POLL_INTERVAL_SECONDS", 30)) * time.Second,
 		BatchLimit:       envInt("BATCH_LIMIT", 5),
+		GeminiAPIKey:     env("GOOGLE_AI_API_KEY", ""),
+		GeminiModel:      env("GEMINI_MODEL", "gemini-3.6-flash"),
 		CDNHost:          env("CDN_HOST", "cdn.u-code.io"),
 		MaxDownloadBytes: int64(envInt("MAX_DOWNLOAD_MB", 200)) * 1024 * 1024,
 		CallTimeout:      time.Duration(envInt("CALL_TIMEOUT_SECONDS", 600)) * time.Second,

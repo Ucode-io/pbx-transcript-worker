@@ -87,6 +87,10 @@ func transcribeCall(ctx context.Context, cfg Config, call Call, workDir string) 
 		tracks = []Track{{Speaker: "unknown", Text: text, Segments: segs}}
 	}
 
+	// LLM cleanup before the transcript ever reaches the DB (contract §7):
+	// Latin-script Russian to Cyrillic, mangled terms restored.
+	tracks = polishTracks(ctx, cfg, tracks)
+
 	doc := Transcript{
 		Version:  1,
 		Model:    cfg.ModelName,
