@@ -63,8 +63,12 @@ resident `whisper-server` and loops:
 2. download the CDN recording → ffmpeg channel-split (or resample if mono)
 3. recognize each channel via `whisper-server /inference` (sequential — the
    benchmarked path)
-4. assemble the two-track JSON (contract §3.2)
-5. `pbx_save_transcript` → write it back
+4. proofread every line through Gemini (contract §7) — Russian speech comes out
+   of the recognizer in Latin letters and terms come out mangled (`visper`);
+   timecodes are ours and never leave. Skipped when `GOOGLE_AI_API_KEY` is
+   unset, and skipped on any API error — the raw text is stored either way
+5. assemble the two-track JSON (contract §3.2)
+6. `pbx_save_transcript` → write it back
 
 It talks to the FaaS **in-cluster** at
 `http://professional-crm-pbx-integration-call.knative-fn.u-code.io` (no auth
@@ -78,7 +82,8 @@ is the one required value.
 # 1. push this repo → CI rebuilds ghcr image with the worker binary
 # 2. create the project-key secret (keeps it out of git)
 kubectl -n ucode-prod create secret generic pbx-transcript-worker-config \
-  --from-literal=APP_IDS="<prof-crm-app-id>"
+  --from-literal=APP_IDS="<prof-crm-app-id>" \
+  --from-literal=GOOGLE_AI_API_KEY="<google-ai-studio-key>"
 # 3. roll it out (pinned to worker08)
 kubectl --kubeconfig=/Users/user/.kube/ucode.conf apply -f k8s/deployment.yaml
 kubectl --kubeconfig=/Users/user/.kube/ucode.conf -n ucode-prod logs -f deploy/pbx-transcript-worker
