@@ -88,8 +88,11 @@ func transcribeCall(ctx context.Context, cfg Config, call Call, workDir string) 
 	}
 
 	// LLM cleanup before the transcript ever reaches the DB (contract §7):
-	// Latin-script Russian to Cyrillic, mangled terms restored.
-	tracks = polishTracks(ctx, cfg, tracks)
+	// Latin-script Russian to Cyrillic, mangled terms restored. Mandatory — a
+	// call we could not polish is left in the queue instead of stored raw.
+	if err := polishTracks(ctx, cfg, tracks); err != nil {
+		return "", err
+	}
 
 	doc := Transcript{
 		Version:  1,

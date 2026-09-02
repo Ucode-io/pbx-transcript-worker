@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -81,6 +82,12 @@ func processBatch(ctx context.Context, cfg Config, client *faasClient, appID str
 			// Log and move on: a bad call must not stall the queue. It stays
 			// untranscribed and is retried next cycle (contract §6.5).
 			log.Printf("call %s: %v", c.CallUUID, err)
+			if errors.Is(err, errPolish) {
+				// The LLM is down, out of quota or misconfigured: the rest of
+				// the batch would burn a whisper run each only to fail the same
+				// way. Give it until the next poll.
+				return
+			}
 		}
 	}
 }

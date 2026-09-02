@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -17,87 +19,140 @@ import (
 // and mangles technical terms ("visper"), which no whisper flag fixes. Gemini
 // rewrites the text line by line; timecodes stay ours.
 //
-// Best-effort by design: on any failure the raw tracks are stored unchanged —
-// a rough transcript beats no transcript, and the row is never re-queued.
+// The cleanup is mandatory: a call whose text could not be polished is not
+// saved at all. An unpolished transcript in the column would look identical to
+// a polished one and would never be re-queued — which is exactly how the first
+// rollout ended up storing raw whisper output for every call. Dropping the call
+// instead leaves the row in the queue (§6.5), so the next cycle retries it.
 
 const geminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 
 const polishAttempts = 3
 
 // polishRetryDelay covers the Google AI Studio free tier, whose quota is
-// per-minute (a few requests). One call = one request, so this rarely trips.
+// per-minute (a few requests).
 const polishRetryDelay = 20 * time.Second
 
-const polishPrompt = `You clean up raw speech-to-text output of phone calls at a CRM software company. Callers speak Uzbek mixed with Russian.
+// polishChunk caps how many lines go into one request. The answer must come
+// back with exactly as many elements as it got, and a whole-call array (a
+// 10-minute call is 100-200 whisper segments) drifts by a line or two often
+// enough that the all-or-nothing check threw away every correction. Per chunk,
+// one bad answer costs one chunk.
+const polishChunk = 40
 
-Input is a JSON array of transcript lines from one call, grouped by speaker (all operator lines first, then the client) — not interleaved dialogue.
+const polishPrompt = `You proofread raw speech-to-text of phone calls at a CRM software company (ucode). Callers speak Uzbek mixed with Russian; the recognizer writes Russian speech in Latin letters and mangles technical terms.
 
-Return a JSON array of strings of the SAME length and in the SAME order, each line corrected.
+Input is a JSON array of consecutive lines of one call in chronological order: {"speaker": "operator" or "client", "text": "..."}. The lines are short fragments, often cut mid-sentence — read the neighbouring lines for context, but correct every line on its own.
+
+Return a JSON array of strings of the SAME length and in the SAME order: element i is the corrected text of input line i.
 
 Rules:
 - Fix recognition errors, spelling and punctuation.
+- Write Russian speech in Cyrillic — the recognizer transliterates it: "privet, u tebya yest plani na vecher" -> "привет, у тебя есть планы на вечер". Keep Uzbek in Latin script as it is.
 - Restore mangled technical and product terms: visper -> Whisper, mpc -> MCP, si-ar-em -> CRM, ERP, API, ucode.
-- Keep Uzbek in Latin script as it is. Write Russian speech in Cyrillic — the recognizer transliterates it: "privet, u tebya yest plani na vecher" -> "привет, у тебя есть планы на вечер".
 - Never translate, summarize, merge, split, reorder, add or drop lines.
 - Return an unintelligible or empty line unchanged.
 - Output the JSON array only.`
 
-// polishTracks rewrites every text of the transcript through the LLM. Returns
-// the tracks unchanged when the key is unset or anything goes wrong.
-func polishTracks(ctx context.Context, cfg Config, tracks []Track) []Track {
-	if cfg.GeminiAPIKey == "" {
-		return tracks
-	}
-	slots := textSlots(tracks)
-	lines := make([]string, len(slots))
-	for i, s := range slots {
-		lines[i] = *s
-	}
-	if len(lines) == 0 {
-		return tracks
-	}
-
-	fixed, err := geminiFix(ctx, cfg, lines)
-	if err != nil {
-		log.Printf("polish skipped: %v", err)
-		return tracks
-	}
-	return applyPolished(tracks, fixed)
+// polishLine is one text of the transcript: the slot to write the correction
+// back into, plus the context the model needs to make one.
+type polishLine struct {
+	slot    *string
+	Speaker string `json:"speaker"`
+	Text    string `json:"text"`
+	from    int64
 }
 
-// textSlots lists every text of the transcript in a fixed order, as pointers so
-// the model's answer maps back by index. A track without segments (mono
+// errPolish marks a failed cleanup, so the batch loop can tell "this one call
+// is bad" from "the LLM is unreachable and every call will fail".
+var errPolish = errors.New("polish")
+
+// polishTracks rewrites every text of the transcript through the LLM, in place.
+// A non-nil error means the transcript must not be stored.
+func polishTracks(ctx context.Context, cfg Config, tracks []Track) error {
+	lines := transcriptLines(tracks)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	fix := func(chunk []polishLine) ([]string, error) { return geminiFix(ctx, cfg, chunk) }
+	changed := 0
+	for start := 0; start < len(lines); start += polishChunk {
+		n, err := polishChunkLines(fix, lines[start:min(start+polishChunk, len(lines))])
+		changed += n
+		if err != nil {
+			return fmt.Errorf("%w at line %d of %d: %v", errPolish, start, len(lines), err)
+		}
+	}
+	log.Printf("polish: %d of %d lines rewritten", changed, len(lines))
+	rebuildTrackText(tracks)
+	return nil
+}
+
+// polishChunkLines corrects one chunk and reports how many lines it changed.
+// The answer must have exactly as many elements as the chunk had lines, or the
+// timecodes would no longer belong to their text; a chunk that comes back
+// mis-counted is halved and retried, and a single line cannot be mis-counted.
+//
+// ponytail: halving costs extra requests only on the rare mangled chunk. If the
+// free-tier quota starts to hurt, cap the recursion and fail the call instead.
+func polishChunkLines(fix func([]polishLine) ([]string, error), chunk []polishLine) (int, error) {
+	fixed, err := fix(chunk)
+	if err != nil {
+		return 0, err
+	}
+	if len(fixed) != len(chunk) {
+		if len(chunk) == 1 {
+			return 0, fmt.Errorf("model returned %d lines for 1: %q", len(fixed), fixed)
+		}
+		half := len(chunk) / 2
+		a, err := polishChunkLines(fix, chunk[:half])
+		if err != nil {
+			return a, err
+		}
+		b, err := polishChunkLines(fix, chunk[half:])
+		return a + b, err
+	}
+
+	changed := 0
+	for i, l := range chunk {
+		if text := strings.TrimSpace(fixed[i]); text != "" && text != *l.slot {
+			*l.slot = text
+			changed++
+		}
+	}
+	return changed, nil
+}
+
+// transcriptLines lists every text of the transcript in call order — the two
+// channels interleaved back into a dialogue, which is the only context the
+// model has for a 90-character fragment. A track without segments (mono
 // fallback) contributes its whole text as one line.
-func textSlots(tracks []Track) []*string {
-	var slots []*string
+func transcriptLines(tracks []Track) []polishLine {
+	var lines []polishLine
 	for i := range tracks {
 		if len(tracks[i].Segments) == 0 {
-			slots = append(slots, &tracks[i].Text)
+			if tracks[i].Text != "" {
+				lines = append(lines, polishLine{
+					slot: &tracks[i].Text, Speaker: tracks[i].Speaker, Text: tracks[i].Text,
+				})
+			}
 			continue
 		}
 		for j := range tracks[i].Segments {
-			slots = append(slots, &tracks[i].Segments[j].Text)
+			seg := &tracks[i].Segments[j]
+			lines = append(lines, polishLine{
+				slot: &seg.Text, Speaker: tracks[i].Speaker, Text: seg.Text, from: seg.From,
+			})
 		}
 	}
-	return slots
+	slices.SortStableFunc(lines, func(a, b polishLine) int { return int(a.from - b.from) })
+	return lines
 }
 
-// applyPolished writes the corrected lines back, all or nothing: a length
-// mismatch means the model dropped or invented lines, and the timecodes would
-// no longer belong to their text.
-func applyPolished(tracks []Track, fixed []string) []Track {
-	slots := textSlots(tracks)
-	if len(fixed) != len(slots) {
-		log.Printf("polish skipped: model returned %d lines for %d", len(fixed), len(slots))
-		return tracks
-	}
-	for i, slot := range slots {
-		if text := strings.TrimSpace(fixed[i]); text != "" {
-			*slot = text
-		}
-	}
-	// Track.Text is the search field of the whole feature — keep it the
-	// concatenation of the polished segments.
+// rebuildTrackText keeps Track.Text — the search field of the whole feature —
+// the concatenation of its (now polished) segments.
+func rebuildTrackText(tracks []Track) {
 	for i := range tracks {
 		if len(tracks[i].Segments) == 0 {
 			continue
@@ -110,7 +165,6 @@ func applyPolished(tracks []Track, fixed []string) []Track {
 		}
 		tracks[i].Text = strings.Join(parts, " ")
 	}
-	return tracks
 }
 
 type geminiResponse struct {
@@ -123,13 +177,14 @@ type geminiResponse struct {
 				Thought bool `json:"thought"`
 			} `json:"parts"`
 		} `json:"content"`
+		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
 	Error struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
-func geminiFix(ctx context.Context, cfg Config, lines []string) ([]string, error) {
+func geminiFix(ctx context.Context, cfg Config, lines []polishLine) ([]string, error) {
 	input, err := json.Marshal(lines)
 	if err != nil {
 		return nil, err
@@ -148,9 +203,9 @@ func geminiFix(ctx context.Context, cfg Config, lines []string) ([]string, error
 				"type":  "ARRAY",
 				"items": map[string]any{"type": "STRING"},
 			},
-			// Proofreading needs no deliberation; thinking only costs latency
-			// and free-tier quota.
-			"thinkingConfig": map[string]any{"thinkingLevel": "low"},
+			// thinkingLevel left at the model default: transliterated Russian in
+			// a 90-character fragment is exactly the case where "low" answered
+			// with the input unchanged.
 		},
 	})
 	if err != nil {
@@ -199,7 +254,9 @@ func geminiFix(ctx context.Context, cfg Config, lines []string) ([]string, error
 		}
 
 		var out strings.Builder
+		finish := ""
 		for _, c := range parsed.Candidates {
+			finish = c.FinishReason
 			for _, p := range c.Content.Parts {
 				if !p.Thought {
 					out.WriteString(p.Text)
@@ -208,7 +265,9 @@ func geminiFix(ctx context.Context, cfg Config, lines []string) ([]string, error
 		}
 		var fixed []string
 		if err := json.Unmarshal([]byte(out.String()), &fixed); err != nil {
-			return nil, fmt.Errorf("decode gemini output: %w", err)
+			// Truncated output (MAX_TOKENS) is not malformed JSON by accident —
+			// name it, or the log reads as a model that cannot count.
+			return nil, fmt.Errorf("decode gemini output (finish %q): %w", finish, err)
 		}
 		return fixed, nil
 	}

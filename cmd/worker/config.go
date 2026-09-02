@@ -33,8 +33,9 @@ type Config struct {
 	BatchLimit   int
 
 	// Gemini (Google AI Studio) proofreads the raw recognition before it is
-	// stored (§7). No key — no polish step, the worker just stores whisper's
-	// output as before.
+	// stored (§7). Required: the cleanup is part of the transcript, not an
+	// optional extra, so the worker refuses to start without a key rather than
+	// quietly filling the column with raw whisper output.
 	GeminiAPIKey string
 	GeminiModel  string
 
@@ -72,6 +73,9 @@ func loadConfig() (Config, error) {
 	}
 	if len(c.AppIDs) == 0 {
 		return c, fmt.Errorf("APP_IDS is required (comma-separated ProfessionalCRM project app_ids)")
+	}
+	if c.GeminiAPIKey == "" {
+		return c, fmt.Errorf("GOOGLE_AI_API_KEY is required (transcripts are stored only after the LLM cleanup)")
 	}
 	return c, nil
 }

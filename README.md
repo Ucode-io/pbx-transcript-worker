@@ -65,8 +65,12 @@ resident `whisper-server` and loops:
    benchmarked path)
 4. proofread every line through Gemini (contract §7) — Russian speech comes out
    of the recognizer in Latin letters and terms come out mangled (`visper`);
-   timecodes are ours and never leave. Skipped when `GOOGLE_AI_API_KEY` is
-   unset, and skipped on any API error — the raw text is stored either way
+   timecodes are ours and never leave. The channels are interleaved back into a
+   dialogue and sent in chunks of 40 lines, so the model sees context and one
+   bad answer costs one chunk, not the call. **Mandatory**: a call that could
+   not be polished is not saved — it stays in the queue and is retried next
+   cycle, because an unpolished transcript is indistinguishable from a polished
+   one once it is in the column and would never be redone
 5. assemble the two-track JSON (contract §3.2)
 6. `pbx_save_transcript` → write it back
 
@@ -74,7 +78,11 @@ It talks to the FaaS **in-cluster** at
 `http://professional-crm-pbx-integration-call.knative-fn.u-code.io` (no auth
 token; `app_id` in the body is the identity). Config is all env — see
 `cmd/worker/config.go`. `APP_IDS` (comma-separated ProfessionalCRM project keys)
-is the one required value.
+and `GOOGLE_AI_API_KEY` are required; the worker exits at startup without them.
+
+To redo calls transcribed before the cleanup worked, clear their `transcript`
+column — an empty column *is* the queue, so the worker picks them up again.
+Watch `polish: N of M lines rewritten` in the logs to confirm it ran.
 
 ### Deploy + E2E test
 ```sh

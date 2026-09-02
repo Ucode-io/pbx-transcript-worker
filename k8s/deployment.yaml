@@ -46,13 +46,13 @@ spec:
                   name: pbx-transcript-worker-config
                   key: APP_IDS
             # Google AI Studio key for the post-recognition cleanup (§7).
-            # Optional: without it the raw whisper text is stored as before.
+            # Required: no key, no transcripts — the worker refuses to start
+            # rather than fill the column with raw whisper output.
             - name: GOOGLE_AI_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: pbx-transcript-worker-config
                   key: GOOGLE_AI_API_KEY
-                  optional: true
           resources:
             requests:
               cpu: "2"          # worker08 has ~2.6 cores free by request
