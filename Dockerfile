@@ -41,8 +41,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /models
 # rubaiSTT v2 medium, ggml q8_0 ~823 MB (contract §6.1). Apache-2.0.
-RUN curl --fail --location --retry 3 -o ggml-rubaistt.bin \
-      https://github.com/MuhammadMirrr/uzbek-dictation/releases/download/v1.0/ggml-rubaistt.bin
+#
+# This used to be curl'd from github.com/MuhammadMirrr/uzbek-dictation, which
+# has since been deleted — every build failed on a 404. HuggingFace publishes
+# only the safetensors weights (islomov/rubaistt_v2_medium), not this ggml
+# conversion, so the last image we built ourselves is the surviving copy. Pinned
+# by digest (tag 5, 2026-08-25): a moving tag would make the build depend on its
+# own previous output.
+COPY --from=ghcr.io/ucode-io/pbx-transcript-worker@sha256:1cda8f9a84fc4feaa60410b8c7a755c56816e16026ad7abd41a8c0e0ca797f83 \
+     /app/models/ggml-rubaistt.bin ./ggml-rubaistt.bin
 # Silero VAD v5.1.2 ~865 KB (whisper.cpp's own VAD model on HuggingFace).
 RUN curl --fail --location --retry 3 -o ggml-silero-v5.1.2.bin \
       https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
