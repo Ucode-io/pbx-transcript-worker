@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 )
 
 func sample() []Track {
@@ -90,6 +92,21 @@ func TestPolishChunkLinesFailsOnHopelessLine(t *testing.T) {
 	_, err := polishChunkLines(func([]polishLine) ([]string, error) { return nil, nil }, chunk)
 	if err == nil {
 		t.Fatal("want an error when the model never returns the right count")
+	}
+}
+
+// A call that ran out of its own budget must stay distinguishable from a dead
+// API — processBatch skips the first and stops the batch on the second, and it
+// tells them apart through this error chain.
+func TestPolishTracksKeepsDeadlineInErrorChain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+
+	err := polishTracks(ctx, Config{GeminiAPIKey: "x", GeminiModel: "m"},
+		[]Track{{Speaker: "operator", Segments: []Segment{{Text: "alo"}}}})
+
+	if !errors.Is(err, errPolish) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want both errPolish and DeadlineExceeded in the chain", err)
 	}
 }
 

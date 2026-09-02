@@ -81,7 +81,9 @@ func polishTracks(ctx context.Context, cfg Config, tracks []Track) error {
 		n, err := polishChunkLines(fix, lines[start:min(start+polishChunk, len(lines))])
 		changed += n
 		if err != nil {
-			return fmt.Errorf("%w at line %d of %d: %v", errPolish, start, len(lines), err)
+			// Both verbs are %w: the caller tells a dead API (stop the batch)
+			// from this one call running out of its own budget (skip it).
+			return fmt.Errorf("%w at line %d of %d: %w", errPolish, start, len(lines), err)
 		}
 	}
 	log.Printf("polish: %d of %d lines rewritten", changed, len(lines))

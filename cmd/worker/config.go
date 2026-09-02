@@ -63,7 +63,12 @@ func loadConfig() (Config, error) {
 		GeminiModel:      env("GEMINI_MODEL", "gemini-3.6-flash"),
 		CDNHost:          env("CDN_HOST", "cdn.u-code.io"),
 		MaxDownloadBytes: int64(envInt("MAX_DOWNLOAD_MB", 200)) * 1024 * 1024,
-		CallTimeout:      time.Duration(envInt("CALL_TIMEOUT_SECONDS", 600)) * time.Second,
+		// 600s used to cut off every stereo call longer than ~4.5 minutes: prod
+		// shows 262s of stereo finishing and 271s timing out, i.e. ~1.13s of
+		// work per second of mono audio and two channels per call. 1800s covers
+		// stereo up to ~13 minutes; longer calls still fail and retry forever,
+		// which needs a skip marker in the FaaS, not a bigger number here.
+		CallTimeout:      time.Duration(envInt("CALL_TIMEOUT_SECONDS", 1800)) * time.Second,
 	}
 
 	for _, id := range strings.Split(env("APP_IDS", ""), ",") {
