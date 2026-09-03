@@ -98,7 +98,8 @@ $K logs -f deploy/pbx-transcript-worker --tail=100 | grep -E "polish|call |whisp
 ```
 
 Актуальный образ в ghcr: `ghcr.io/ucode-io/pbx-transcript-worker:latest` →
-`sha256:bd3ab2b58cca43c6177bf37457b23ea712f07efe145364a1260391cee0e96e46`.
+`sha256:5e60f414552817bf4eacc1c89168c2db55dba358dbf8bfd16af81c728c473a8e`
+(коммит `24fda08`, сборка 03.09 04:06 UTC).
 Сверить, что под поднялся именно на нём:
 
 ```sh
