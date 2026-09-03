@@ -63,14 +63,21 @@ resident `whisper-server` and loops:
 2. download the CDN recording → ffmpeg channel-split (or resample if mono)
 3. recognize each channel via `whisper-server /inference` (sequential — the
    benchmarked path)
-4. proofread every line through Gemini (contract §7) — Russian speech comes out
-   of the recognizer in Latin letters and terms come out mangled (`visper`);
-   timecodes are ours and never leave. The channels are interleaved back into a
-   dialogue and sent in chunks of 40 lines, so the model sees context and one
-   bad answer costs one chunk, not the call. **Mandatory**: a call that could
-   not be polished is not saved — it stays in the queue and is retried next
-   cycle, because an unpolished transcript is indistinguishable from a polished
-   one once it is in the column and would never be redone
+4. proofread every line through Gemini (contract §7) — **with the call audio in
+   the same request** (mixed to one 16 kHz mono mp3). Text alone only made the
+   recognition tidier, not truer; with the audio the model corrects what was
+   misheard: prod line `engine sound. Alo. Rayon, salom … Rossiya televizor` came
+   back as `Alo. Vaalaykum assalom … Adashdingiz, og'ayni` (wrong number). It also
+   fixes what no whisper flag can — Russian speech written in Latin letters and
+   mangled terms (`visper`). Timecodes are ours and never leave. The channels are
+   interleaved back into a dialogue and sent in chunks of 40 lines, so the model
+   sees context and one bad answer costs one chunk, not the call. Every line
+   carries its `from_sec`/`to_sec` and its speaker: hearing the mixed call, the
+   model otherwise re-transcribes it and redistributes speech across the slots
+   (a test put the operator's pitch into a client line). **Mandatory**:
+   a call that could not be polished is not saved — it stays in the queue and is
+   retried next cycle, because an unpolished transcript is indistinguishable from
+   a polished one once it is in the column and would never be redone
 5. assemble the two-track JSON (contract §3.2)
 6. `pbx_save_transcript` → write it back
 
@@ -79,6 +86,13 @@ It talks to the FaaS **in-cluster** at
 token; `app_id` in the body is the identity). Config is all env — see
 `cmd/worker/config.go`. `APP_IDS` (comma-separated ProfessionalCRM project keys)
 and `GOOGLE_AI_API_KEY` are required; the worker exits at startup without them.
+
+`GOOGLE_AI_API_KEY` and `GEMINI_MODEL` both take comma-separated lists. The free
+tier meters requests **per project and per model** (20/day —
+`GenerateRequestsPerDayPerProjectPerModel-FreeTier`), so every key×model pair is
+its own daily bucket: 3 keys × 1 model = 60 requests/day, and a call costs 1
+request per 40 lines (median 1). Calls rotate through the pairs and a 429 moves
+on to the next one, so an exhausted key costs one request, not the call.
 
 To redo calls transcribed before the cleanup worked, clear their `transcript`
 column — an empty column *is* the queue, so the worker picks them up again.
@@ -91,7 +105,7 @@ Watch `polish: N of M lines rewritten` in the logs to confirm it ran.
 # 2. create the project-key secret (keeps it out of git)
 kubectl -n ucode-prod create secret generic pbx-transcript-worker-config \
   --from-literal=APP_IDS="<prof-crm-app-id>" \
-  --from-literal=GOOGLE_AI_API_KEY="<google-ai-studio-key>"
+  --from-literal=GOOGLE_AI_API_KEY="<key1>,<key2>,<key3>"   # list = more daily quota
 # 3. roll it out (pinned to worker08)
 kubectl --kubeconfig=/Users/user/.kube/ucode.conf apply -f k8s/deployment.yaml
 kubectl --kubeconfig=/Users/user/.kube/ucode.conf -n ucode-prod logs -f deploy/pbx-transcript-worker

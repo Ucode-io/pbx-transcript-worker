@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -102,8 +106,8 @@ func TestPolishTracksKeepsDeadlineInErrorChain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
 
-	err := polishTracks(ctx, Config{GeminiAPIKey: "x", GeminiModel: "m"},
-		[]Track{{Speaker: "operator", Segments: []Segment{{Text: "alo"}}}})
+	err := polishTracks(ctx, Config{GeminiAPIKeys: []string{"x"}, GeminiModels: []string{"m"}},
+		[]Track{{Speaker: "operator", Segments: []Segment{{Text: "alo"}}}}, "")
 
 	if !errors.Is(err, errPolish) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want both errPolish and DeadlineExceeded in the chain", err)
@@ -117,7 +121,7 @@ func TestPolishLive(t *testing.T) {
 	if key == "" {
 		t.Skip("GOOGLE_AI_API_KEY unset")
 	}
-	cfg := Config{GeminiAPIKey: key, GeminiModel: env("GEMINI_MODEL", "gemini-3.6-flash")}
+	cfg := Config{GeminiAPIKeys: csv(key), GeminiModels: csv(env("GEMINI_MODEL", "gemini-3.6-flash"))}
 	lines := transcriptLines([]Track{
 		{Speaker: "operator", Segments: []Segment{
 			{Text: "alo assalomu alaykum"},
@@ -125,7 +129,7 @@ func TestPolishLive(t *testing.T) {
 		}},
 	})
 
-	fixed, err := geminiFix(context.Background(), cfg, lines)
+	fixed, err := geminiFix(context.Background(), cfg, lines, readPolishAudio(os.Getenv("POLISH_AUDIO")))
 	if err != nil {
 		t.Fatalf("geminiFix: %v", err)
 	}
@@ -134,5 +138,66 @@ func TestPolishLive(t *testing.T) {
 	}
 	for i, f := range fixed {
 		t.Logf("%q -> %q", lines[i].Text, f)
+	}
+}
+
+// A key that is out of its daily quota must cost one request, not the call:
+// the next key×model pair in the rotation answers instead. The audio, when
+// there is any, rides in the same request.
+func TestGeminiFixRotatesPastAnExhaustedKey(t *testing.T) {
+	var mu sync.Mutex
+	var seenKeys []string
+	sawAudio := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Contents []struct {
+				Parts []struct {
+					InlineData struct {
+						MIMEType string `json:"mime_type"`
+					} `json:"inline_data"`
+				} `json:"parts"`
+			} `json:"contents"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		mu.Lock()
+		defer mu.Unlock()
+		key := r.Header.Get("x-goog-api-key")
+		seenKeys = append(seenKeys, key)
+		for _, c := range req.Contents {
+			for _, p := range c.Parts {
+				sawAudio = sawAudio || p.InlineData.MIMEType == polishAudioMIME
+			}
+		}
+		if key == "spent" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":{"message":"quota"}}`))
+			return
+		}
+		w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"[\"алло\"]"}]}}]}`))
+	}))
+	defer srv.Close()
+
+	saved := geminiEndpoint
+	geminiEndpoint = srv.URL + "/%s"
+	defer func() { geminiEndpoint = saved }()
+	geminiTurn.Store(0) // start the rotation at the exhausted key
+
+	cfg := Config{GeminiAPIKeys: []string{"spent", "fresh"}, GeminiModels: []string{"m"}}
+	lines := transcriptLines([]Track{{Speaker: "client", Segments: []Segment{{Text: "alo"}}}})
+
+	fixed, err := geminiFix(context.Background(), cfg, lines, []byte("fake mp3"))
+	if err != nil {
+		t.Fatalf("geminiFix: %v", err)
+	}
+	if len(fixed) != 1 || fixed[0] != "алло" {
+		t.Fatalf("fixed = %q", fixed)
+	}
+	if len(seenKeys) != 2 || seenKeys[0] != "spent" || seenKeys[1] != "fresh" {
+		t.Fatalf("keys tried = %v, want [spent fresh]", seenKeys)
+	}
+	if !sawAudio {
+		t.Fatal("audio was not attached to the request")
 	}
 }

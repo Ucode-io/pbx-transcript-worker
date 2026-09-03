@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -88,9 +89,16 @@ func transcribeCall(ctx context.Context, cfg Config, call Call, workDir string) 
 	}
 
 	// LLM cleanup before the transcript ever reaches the DB (contract §7):
-	// Latin-script Russian to Cyrillic, mangled terms restored. Mandatory — a
-	// call we could not polish is left in the queue instead of stored raw.
-	if err := polishTracks(ctx, cfg, tracks); err != nil {
+	// recognition errors fixed against the audio, Latin-script Russian to
+	// Cyrillic, mangled terms restored. Mandatory — a call we could not polish
+	// is left in the queue instead of stored raw. The mix is best-effort: if
+	// ffmpeg fails here the call is still polished, just text-only.
+	mixPath := filepath.Join(workDir, "mix.mp3")
+	if err := toMonoMP3(ctx, recPath, mixPath); err != nil {
+		log.Printf("call %s: mix for polish: %v", call.CallUUID, err)
+		mixPath = ""
+	}
+	if err := polishTracks(ctx, cfg, tracks, mixPath); err != nil {
 		return "", err
 	}
 
@@ -190,6 +198,14 @@ func splitStereo(ctx context.Context, input, opWav, clWav string) error {
 
 func toMono16k(ctx context.Context, input, outWav string) error {
 	return runFFmpeg(ctx, "-i", input, "-ar", "16000", "-ac", "1", outWav)
+}
+
+// toMonoMP3 mixes the call down to one 16 kHz mono track for the LLM: both
+// speakers in one stream, as the polish prompt describes them, and small enough
+// to inline (32 kbps ≈ 4 KB per second of call).
+func toMonoMP3(ctx context.Context, input, outMP3 string) error {
+	return runFFmpeg(ctx, "-i", input, "-ar", "16000", "-ac", "1",
+		"-c:a", "libmp3lame", "-b:a", "32k", outMP3)
 }
 
 func runFFmpeg(ctx context.Context, args ...string) error {

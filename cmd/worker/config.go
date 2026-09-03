@@ -36,8 +36,12 @@ type Config struct {
 	// stored (§7). Required: the cleanup is part of the transcript, not an
 	// optional extra, so the worker refuses to start without a key rather than
 	// quietly filling the column with raw whisper output.
-	GeminiAPIKey string
-	GeminiModel  string
+	//
+	// Both are comma-separated lists. The free tier meters requests per project
+	// AND per model (GenerateRequestsPerDayPerProjectPerModel-FreeTier: 20/day),
+	// so every key×model pair is its own daily bucket: 3 keys × 2 models = 6.
+	GeminiAPIKeys []string
+	GeminiModels  []string
 
 	// CDNHost is the only host a recording URL may point at — the worker
 	// fetches it server-side, so this is the SSRF allowlist (matches the FaaS).
@@ -59,8 +63,8 @@ func loadConfig() (Config, error) {
 		ModelName:        env("MODEL_NAME", "rubaistt_v2_medium"),
 		PollInterval:     time.Duration(envInt("POLL_INTERVAL_SECONDS", 30)) * time.Second,
 		BatchLimit:       envInt("BATCH_LIMIT", 5),
-		GeminiAPIKey:     env("GOOGLE_AI_API_KEY", ""),
-		GeminiModel:      env("GEMINI_MODEL", "gemini-3.6-flash"),
+		GeminiAPIKeys:    csv(env("GOOGLE_AI_API_KEY", "")),
+		GeminiModels:     csv(env("GEMINI_MODEL", "gemini-3.6-flash")),
 		CDNHost:          env("CDN_HOST", "cdn.u-code.io"),
 		MaxDownloadBytes: int64(envInt("MAX_DOWNLOAD_MB", 200)) * 1024 * 1024,
 		// 600s used to cut off every stereo call longer than ~4.5 minutes: prod
@@ -68,19 +72,18 @@ func loadConfig() (Config, error) {
 		// work per second of mono audio and two channels per call. 1800s covers
 		// stereo up to ~13 minutes; longer calls still fail and retry forever,
 		// which needs a skip marker in the FaaS, not a bigger number here.
-		CallTimeout:      time.Duration(envInt("CALL_TIMEOUT_SECONDS", 1800)) * time.Second,
+		CallTimeout: time.Duration(envInt("CALL_TIMEOUT_SECONDS", 1800)) * time.Second,
 	}
 
-	for _, id := range strings.Split(env("APP_IDS", ""), ",") {
-		if id = strings.TrimSpace(id); id != "" {
-			c.AppIDs = append(c.AppIDs, id)
-		}
-	}
+	c.AppIDs = csv(env("APP_IDS", ""))
 	if len(c.AppIDs) == 0 {
 		return c, fmt.Errorf("APP_IDS is required (comma-separated ProfessionalCRM project app_ids)")
 	}
-	if c.GeminiAPIKey == "" {
+	if len(c.GeminiAPIKeys) == 0 {
 		return c, fmt.Errorf("GOOGLE_AI_API_KEY is required (transcripts are stored only after the LLM cleanup)")
+	}
+	if len(c.GeminiModels) == 0 {
+		return c, fmt.Errorf("GEMINI_MODEL must not be empty")
 	}
 	return c, nil
 }
@@ -94,6 +97,17 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// csv splits a comma-separated env value, dropping blanks.
+func csv(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func envInt(key string, def int) int {
