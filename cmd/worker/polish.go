@@ -49,15 +49,16 @@ const polishRetryDelay = 20 * time.Second
 // 20-minute call is ~38k tokens and ~6 MB of base64 — inside the 20 MB request
 // cap. Longer calls go through without audio rather than failing.
 //
-// ponytail: the same audio is attached to every chunk of a long call. Median is
-// one chunk per call in prod (5.5 lines), so slicing the audio per chunk buys
-// nothing until calls get much longer.
+// ponytail: the same audio is attached to every chunk of a long call. Measured
+// on the last 10 prod calls at -ml 30: 26 lines for a typical stereo call, one
+// chunk, one upload. Only the 309-second mono call needs 5, so slicing the
+// audio per chunk buys nothing until long calls stop being the exception.
 const polishAudioMIME = "audio/mp3"
 const maxPolishAudio = 12 << 20
 
 // polishChunk caps how many lines go into one request. The answer must come
 // back with exactly as many elements as it got, and a whole-call array (a
-// 10-minute call is 100-200 whisper segments) drifts by a line or two often
+// 10-minute call is ~370 segments at -ml 30) drifts by a line or two often
 // enough that the all-or-nothing check threw away every correction. Per chunk,
 // one bad answer costs one chunk.
 const polishChunk = 40

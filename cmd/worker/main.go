@@ -125,7 +125,8 @@ type whisperServer struct{ cmd *exec.Cmd }
 func startWhisperServer(ctx context.Context, cfg Config) (*whisperServer, error) {
 	args := []string{
 		"-m", cfg.WhisperModel, "-l", cfg.Language,
-		"--vad", "-vm", cfg.VADModel, "-sns", "-ml", "90", "-sow",
+		"--vad", "-vm", cfg.VADModel, "-sns", "-sow",
+		"-ml", strconv.Itoa(cfg.MaxSegmentChars),
 		"-t", strconv.Itoa(cfg.Threads),
 		"--host", cfg.WhisperHost, "--port", strconv.Itoa(cfg.WhisperPort),
 	}

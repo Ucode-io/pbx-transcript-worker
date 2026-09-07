@@ -28,6 +28,14 @@ type Config struct {
 	Threads      int
 	Language     string
 	ModelName    string // recorded in the transcript JSON "model" field
+	// MaxSegmentChars is whisper's -ml: the longest text one segment may hold.
+	// It is what decides how finely the channel is cut, and with --vad that is
+	// also the timestamp resolution: VAD strips the silence, so a segment's
+	// interval is stretched over every pause inside it (a 129-char client line
+	// covered 22.4s..79.55s of a 74s call). Coarse segments cannot be
+	// interleaved back into a dialogue — the client's "mhm" lands wherever its
+	// block starts. Tune here if the dialogue order still reads wrong.
+	MaxSegmentChars int
 
 	PollInterval time.Duration
 	BatchLimit   int
@@ -61,6 +69,7 @@ func loadConfig() (Config, error) {
 		Threads:          envInt("THREADS", 4),
 		Language:         env("LANGUAGE", "uz"),
 		ModelName:        env("MODEL_NAME", "rubaistt_v2_medium"),
+		MaxSegmentChars:  envInt("MAX_SEGMENT_CHARS", 30),
 		PollInterval:     time.Duration(envInt("POLL_INTERVAL_SECONDS", 30)) * time.Second,
 		BatchLimit:       envInt("BATCH_LIMIT", 5),
 		GeminiAPIKeys:    csv(env("GOOGLE_AI_API_KEY", "")),

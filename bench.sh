@@ -43,7 +43,7 @@ ffmpeg -hide_banner -loglevel error -i "${INPUT}" \
 # --- start whisper-server with the exact mandatory flags (contract §6.3) ------
 echo "[2/4] starting whisper-server (model stays resident)..."
 whisper-server -m "${MODEL}" -l uz \
-  --vad -vm "${VAD}" -sns -ml 90 -sow \
+  --vad -vm "${VAD}" -sns -ml "${MAX_SEGMENT_CHARS:-30}" -sow \
   -t "${THREADS}" \
   --host 127.0.0.1 --port "${PORT}" >"${work}/server.log" 2>&1 &
 SRV_PID=$!
